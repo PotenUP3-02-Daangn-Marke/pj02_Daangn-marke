@@ -13,4 +13,9 @@ wheels/
 
 .DS_Store
 
+# Directories
+/data/cache
+/data/csv
+/data/csv_labeled
 /data/images
+/data/parquet
