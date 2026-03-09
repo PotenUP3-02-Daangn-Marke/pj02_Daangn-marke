@@ -19,4 +19,5 @@ data/csv
 data/csv_labeled
 data/images
 data/parquet
+data/processed
 notebooks/catboost_info
