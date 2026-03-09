@@ -1,4 +1,4 @@
-# 01_siglip_labeling_pipeline.py
+# 01_siglip_labeling_pipeline_merged_final.py
 # Python 3.12+
 #
 # Requirements
@@ -22,6 +22,17 @@
 # - image feature cache
 # - move/copy to label directories
 # - robust HF output handling (Tensor / BaseModelOutputWithPooling)
+#
+# ✅ merged_dedup.csv 기준
+#   - title/content 사용
+#   - id 기준으로 단일 이미지 폴더에서 찾음
+#
+# ✅ unknown 줄이기 반영
+#   - softmax confidence 사용
+#   - threshold 완화
+#   - very_low_conf일 때만 unknown
+#   - 대부분 애매한 샘플은 fine_pred 유지 + review 로 보냄
+#   - keyword prior를 CLIP 코드 수준으로 강화
 
 from __future__ import annotations
 
@@ -41,12 +52,15 @@ from transformers import AutoModel, AutoProcessor
 # =========================
 # Config
 # =========================
-KEYWORD = '노스페이스'
-IMG_DIR = Path(f'./data/images/{KEYWORD}')
-CSV_PATH = Path(f'./data/csv/daangn_{KEYWORD}.csv')
-OUT_CSV_PATH = Path(f'./data/csv/daangn_{KEYWORD}_siglip2_labeled.csv')
-REVIEW_CSV_PATH = Path(f'./data/csv/daangn_{KEYWORD}_siglip2_review.csv')
-FEATURE_CACHE_PATH = Path(f'./data/cache/{KEYWORD}_siglip2_image_features.pt')
+DATASET_NAME = 'merged_dedup'
+
+# ✅ 실제 경로로 수정
+IMG_DIR = Path('./data/images/merged_all')
+CSV_PATH = Path('./data/csv/merged_dedup.csv')
+
+OUT_CSV_PATH = Path(f'./data/csv/{DATASET_NAME}_siglip2_labeled.csv')
+REVIEW_CSV_PATH = Path(f'./data/csv/{DATASET_NAME}_siglip2_review.csv')
+FEATURE_CACHE_PATH = Path(f'./data/cache/{DATASET_NAME}_siglip2_image_features.pt')
 
 MODEL_NAME = 'google/siglip2-so400m-patch16-naflex'
 
@@ -55,8 +69,8 @@ DTYPE = torch.float16 if DEVICE == 'cuda' else torch.float32
 
 BATCH_SIZE = 8
 TEXT_BATCH_SIZE = 128
-SAVE_IMAGE_FEATURES = False
-LOAD_IMAGE_FEATURES_IF_EXISTS = True
+SAVE_IMAGE_FEATURES = False  # 한번만 True한뒤 나중에 False
+LOAD_IMAGE_FEATURES_IF_EXISTS = True  # 처음엔 False 이후에 True
 USE_TORCH_COMPILE = False
 
 ALPHA_IMG = 0.88
@@ -71,13 +85,14 @@ MOVE_UNKNOWN_TOO = True
 UNKNOWN_DIR_NAME = '_unknown'
 MOVE_BY = 'coarse'  # "coarse" | "fine"
 
-COARSE_MARGIN_THRESH = 0.10
-COARSE_CONF_THRESH = 0.55
+# ✅ unknown 줄이기용 완화 threshold
+COARSE_MARGIN_THRESH = 0.06
+COARSE_CONF_THRESH = 0.22
 
-FINE_MARGIN_THRESH = 0.06
-FINE_CONF_THRESH = 0.50
+FINE_MARGIN_THRESH = 0.03
+FINE_CONF_THRESH = 0.18
 
-TOP1_TOP2_RATIO_THRESH = 1.08
+TOP1_TOP2_RATIO_THRESH = 1.02
 REVIEW_IF_IMAGE_TEXT_DISAGREE = True
 IMAGE_TEXT_DISAGREE_MARGIN = 0.20
 
@@ -234,6 +249,10 @@ def build_keyword_sentence(keywords: str) -> str:
 
 
 def coarse_prior_from_keywords(keywords: str, coarse_labels: list[str]) -> torch.Tensor:
+    """
+    keyword 기반으로 coarse score bias를 준다.
+    CLIP 코드 수준으로 약간 더 강하게 반영.
+    """
     prior_map = {
         'top': {
             '티셔츠',
@@ -266,7 +285,7 @@ def coarse_prior_from_keywords(keywords: str, coarse_labels: list[str]) -> torch
     for i, label in enumerate(coarse_labels):
         overlap = len(kw_set & prior_map.get(label, set()))
         if overlap > 0:
-            bias[i] = 1.3 + 0.45 * overlap
+            bias[i] = 1.5 + 0.5 * overlap
     return bias
 
 
@@ -274,9 +293,6 @@ def coarse_prior_from_keywords(keywords: str, coarse_labels: list[str]) -> torch
 # Brand extraction + brand prior
 # =========================
 BRAND_ALIASES: dict[str, list[str]] = {
-    # =========================
-    # Polo / classic / prep
-    # =========================
     'polo ralph lauren': [
         '폴로',
         '폴로랄프로렌',
@@ -287,121 +303,30 @@ BRAND_ALIASES: dict[str, list[str]] = {
         'ralph lauren',
         'polo by ralph lauren',
     ],
-    'lacoste': [
-        '라코스테',
-        'lacoste',
-    ],
-    'beams': [
-        '빔즈',
-        'beams',
-    ],
-    'brooks brothers': [
-        '브룩스브라더스',
-        '브룩스 브라더스',
-        'brooks brothers',
-    ],
-    # =========================
-    # Outdoor / sports
-    # =========================
-    'the north face': [
-        '노스페이스',
-        '노페',
-        'north face',
-        'the north face',
-        'tnf',
-    ],
-    'nike': [
-        '나이키',
-        'nike',
-        'nk',
-    ],
-    'adidas': [
-        '아디다스',
-        '아디',
-        'adidas',
-        'adidas originals',
-    ],
-    'new balance': [
-        '뉴발란스',
-        '뉴발',
-        'new balance',
-        'nb',
-    ],
-    'puma': [
-        '푸마',
-        'puma',
-    ],
-    'reebok': [
-        '리복',
-        'reebok',
-    ],
-    'asics': [
-        '아식스',
-        'asics',
-    ],
-    'under armour': [
-        '언더아머',
-        '언더 아머',
-        'under armour',
-        'under armor',
-        'ua',
-    ],
-    'fila': [
-        '휠라',
-        'fila',
-    ],
-    'kappa': [
-        '카파',
-        'kappa',
-    ],
-    'descente': [
-        '데상트',
-        'descente',
-    ],
-    'mizuno': [
-        '미즈노',
-        'mizuno',
-    ],
-    'salomon': [
-        '살로몬',
-        'salomon',
-    ],
-    "arc'teryx": [
-        '아크테릭스',
-        '아크',
-        "arc'teryx",
-        'arcteryx',
-    ],
-    'patagonia': [
-        '파타고니아',
-        'patagonia',
-    ],
-    'columbia': [
-        '컬럼비아',
-        'columbia',
-    ],
-    'montbell': [
-        '몽벨',
-        'mont bell',
-        'montbell',
-    ],
-    'millet': [
-        '밀레',
-        'millet',
-    ],
-    'blackyak': [
-        '블랙야크',
-        'blackyak',
-        'black yak',
-    ],
-    'k2': [
-        'k2',
-        '케이투',
-    ],
-    'nepa': [
-        '네파',
-        'nepa',
-    ],
+    'lacoste': ['라코스테', 'lacoste'],
+    'beams': ['빔즈', 'beams'],
+    'brooks brothers': ['브룩스브라더스', '브룩스 브라더스', 'brooks brothers'],
+    'the north face': ['노스페이스', '노페', 'north face', 'the north face', 'tnf'],
+    'nike': ['나이키', 'nike', 'nk'],
+    'adidas': ['아디다스', '아디', 'adidas', 'adidas originals'],
+    'new balance': ['뉴발란스', '뉴발', 'new balance', 'nb'],
+    'puma': ['푸마', 'puma'],
+    'reebok': ['리복', 'reebok'],
+    'asics': ['아식스', 'asics'],
+    'under armour': ['언더아머', '언더 아머', 'under armour', 'under armor', 'ua'],
+    'fila': ['휠라', 'fila'],
+    'kappa': ['카파', 'kappa'],
+    'descente': ['데상트', 'descente'],
+    'mizuno': ['미즈노', 'mizuno'],
+    'salomon': ['살로몬', 'salomon'],
+    "arc'teryx": ['아크테릭스', '아크', "arc'teryx", 'arcteryx'],
+    'patagonia': ['파타고니아', 'patagonia'],
+    'columbia': ['컬럼비아', 'columbia'],
+    'montbell': ['몽벨', 'mont bell', 'montbell'],
+    'millet': ['밀레', 'millet'],
+    'blackyak': ['블랙야크', 'blackyak', 'black yak'],
+    'k2': ['k2', '케이투'],
+    'nepa': ['네파', 'nepa'],
     'discovery expedition': [
         '디스커버리',
         '디스커버리 익스페디션',
@@ -413,66 +338,18 @@ BRAND_ALIASES: dict[str, list[str]] = {
         '내셔널 지오그래픽',
         'national geographic',
     ],
-    'snow peak': [
-        '스노우피크',
-        'snow peak',
-    ],
-    # =========================
-    # Casual / street / SPA
-    # =========================
-    'uniqlo': [
-        '유니클로',
-        'uniqlo',
-        '유니클로u',
-        'uniqlo u',
-    ],
-    'gu': [
-        '지유',
-        'gu',
-    ],
-    'zara': [
-        '자라',
-        'zara',
-        'zaraman',
-        'zara man',
-    ],
-    'h&m': [
-        'h&m',
-        'hm',
-        '에이치앤엠',
-        '에이치 앤 엠',
-    ],
-    'cos': [
-        'cos',
-        '코스',
-    ],
-    'massimo dutti': [
-        '마시모두띠',
-        '마시모 두띠',
-        'massimo dutti',
-    ],
-    'weekday': [
-        'weekday',
-        '위크데이',
-    ],
-    'arket': [
-        'arket',
-        '아르켓',
-    ],
-    'muji': [
-        '무인양품',
-        '무지',
-        'muji',
-    ],
-    'gap': [
-        '갭',
-        'gap',
-    ],
-    'banana republic': [
-        '바나나리퍼블릭',
-        '바나나 리퍼블릭',
-        'banana republic',
-    ],
+    'snow peak': ['스노우피크', 'snow peak'],
+    'uniqlo': ['유니클로', 'uniqlo', '유니클로u', 'uniqlo u'],
+    'gu': ['지유', 'gu'],
+    'zara': ['자라', 'zara', 'zaraman', 'zara man'],
+    'h&m': ['h&m', 'hm', '에이치앤엠', '에이치 앤 엠'],
+    'cos': ['cos', '코스'],
+    'massimo dutti': ['마시모두띠', '마시모 두띠', 'massimo dutti'],
+    'weekday': ['weekday', '위크데이'],
+    'arket': ['arket', '아르켓'],
+    'muji': ['무인양품', '무지', 'muji'],
+    'gap': ['갭', 'gap'],
+    'banana republic': ['바나나리퍼블릭', '바나나 리퍼블릭', 'banana republic'],
     'abercrombie & fitch': [
         '아베크롬비',
         '아베크롬비앤피치',
@@ -480,343 +357,87 @@ BRAND_ALIASES: dict[str, list[str]] = {
         'abercrombie & fitch',
         'a&f',
     ],
-    'hollister': [
-        '홀리스터',
-        'hollister',
-    ],
-    'american eagle': [
-        '아메리칸이글',
-        '아메리칸 이글',
-        'american eagle',
-    ],
-    'carhartt': [
-        '칼하트',
-        'carhartt',
-        'carhartt wip',
-    ],
-    'dickies': [
-        '디키즈',
-        'dickies',
-    ],
-    'ben davis': [
-        '벤데이비스',
-        '벤 데이비스',
-        'ben davis',
-    ],
-    'stussy': [
-        '스투시',
-        'stussy',
-    ],
-    'supreme': [
-        '슈프림',
-        'supreme',
-    ],
-    'thisisneverthat': [
-        '디스이즈네버댓',
-        'thisisneverthat',
-        'tnn',
-    ],
-    'musinsa standard': [
-        '무신사스탠다드',
-        '무신사 스탠다드',
-        'musinsa standard',
-    ],
-    '8seconds': [
-        '에잇세컨즈',
-        '8seconds',
-        '8 seconds',
-    ],
-    'spao': [
-        '스파오',
-        'spao',
-    ],
-    'topten': [
-        '탑텐',
-        'topten',
-        'topten10',
-        'topten 10',
-    ],
-    'giordano': [
-        '지오다노',
-        'giordano',
-    ],
-    'codes combine': [
-        '코데즈컴바인',
-        'codes combine',
-    ],
-    'tngt': [
-        'tngt',
-        '티엔지티',
-    ],
-    'time homme': [
-        '타임옴므',
-        '타임 옴므',
-        'time homme',
-    ],
-    'system homme': [
-        '시스템옴므',
-        '시스템 옴므',
-        'system homme',
-    ],
-    # =========================
-    # Denim / contemporary
-    # =========================
-    "levi's": [
-        '리바이스',
-        "levi's",
-        'levis',
-    ],
-    'lee': [
-        'lee',
-        '리',
-    ],
-    'edwin': [
-        '에드윈',
-        'edwin',
-    ],
-    'nudie jeans': [
-        '누디진',
-        '누디진스',
-        'nudie jeans',
-        'nudie',
-    ],
-    'diesel': [
-        '디젤',
-        'diesel',
-    ],
-    # =========================
-    # Designer / luxury
-    # =========================
-    'burberry': [
-        '버버리',
-        'burberry',
-    ],
-    'gucci': [
-        '구찌',
-        'gucci',
-    ],
-    'chanel': [
-        '샤넬',
-        'chanel',
-    ],
-    'louis vuitton': [
-        '루이비통',
-        '루이 비통',
-        'louis vuitton',
-        'lv',
-    ],
-    'hermes': [
-        '에르메스',
-        'hermes',
-    ],
-    'prada': [
-        '프라다',
-        'prada',
-    ],
-    'miu miu': [
-        '미우미우',
-        '미우 미우',
-        'miu miu',
-    ],
-    'celine': [
-        '셀린느',
-        '셀린',
-        'celine',
-    ],
-    'dior': [
-        '디올',
-        'christian dior',
-        'dior',
-    ],
-    'saint laurent': [
-        '생로랑',
-        'saint laurent',
-        'ysl',
-    ],
-    'balenciaga': [
-        '발렌시아가',
-        'balenciaga',
-    ],
-    'givenchy': [
-        '지방시',
-        'givenchy',
-    ],
-    'valentino': [
-        '발렌티노',
-        'valentino',
-    ],
-    'fendi': [
-        '펜디',
-        'fendi',
-    ],
-    'bottega veneta': [
-        '보테가베네타',
-        '보테가 베네타',
-        'bottega veneta',
-    ],
-    'loewe': [
-        '로에베',
-        'loewe',
-    ],
-    'marni': [
-        '마르니',
-        'marni',
-    ],
+    'hollister': ['홀리스터', 'hollister'],
+    'american eagle': ['아메리칸이글', '아메리칸 이글', 'american eagle'],
+    'carhartt': ['칼하트', 'carhartt', 'carhartt wip'],
+    'dickies': ['디키즈', 'dickies'],
+    'ben davis': ['벤데이비스', '벤 데이비스', 'ben davis'],
+    'stussy': ['스투시', 'stussy'],
+    'supreme': ['슈프림', 'supreme'],
+    'thisisneverthat': ['디스이즈네버댓', 'thisisneverthat', 'tnn'],
+    'musinsa standard': ['무신사스탠다드', '무신사 스탠다드', 'musinsa standard'],
+    '8seconds': ['에잇세컨즈', '8seconds', '8 seconds'],
+    'spao': ['스파오', 'spao'],
+    'topten': ['탑텐', 'topten', 'topten10', 'topten 10'],
+    'giordano': ['지오다노', 'giordano'],
+    'codes combine': ['코데즈컴바인', 'codes combine'],
+    'tngt': ['tngt', '티엔지티'],
+    'time homme': ['타임옴므', '타임 옴므', 'time homme'],
+    'system homme': ['시스템옴므', '시스템 옴므', 'system homme'],
+    "levi's": ['리바이스', "levi's", 'levis'],
+    'lee': ['lee', '리'],
+    'edwin': ['에드윈', 'edwin'],
+    'nudie jeans': ['누디진', '누디진스', 'nudie jeans', 'nudie'],
+    'diesel': ['디젤', 'diesel'],
+    'burberry': ['버버리', 'burberry'],
+    'gucci': ['구찌', 'gucci'],
+    'chanel': ['샤넬', 'chanel'],
+    'louis vuitton': ['루이비통', '루이 비통', 'louis vuitton', 'lv'],
+    'hermes': ['에르메스', 'hermes'],
+    'prada': ['프라다', 'prada'],
+    'miu miu': ['미우미우', '미우 미우', 'miu miu'],
+    'celine': ['셀린느', '셀린', 'celine'],
+    'dior': ['디올', 'christian dior', 'dior'],
+    'saint laurent': ['생로랑', 'saint laurent', 'ysl'],
+    'balenciaga': ['발렌시아가', 'balenciaga'],
+    'givenchy': ['지방시', 'givenchy'],
+    'valentino': ['발렌티노', 'valentino'],
+    'fendi': ['펜디', 'fendi'],
+    'bottega veneta': ['보테가베네타', '보테가 베네타', 'bottega veneta'],
+    'loewe': ['로에베', 'loewe'],
+    'marni': ['마르니', 'marni'],
     'maison margiela': [
         '메종마르지엘라',
         '메종 마르지엘라',
         'maison margiela',
         'margiela',
     ],
-    'jil sander': [
-        '질샌더',
-        '질 샌더',
-        'jil sander',
-    ],
-    'thom browne': [
-        '톰브라운',
-        '톰 브라운',
-        'thom browne',
-    ],
-    'moncler': [
-        '몽클레어',
-        'moncler',
-    ],
-    'stone island': [
-        '스톤아일랜드',
-        '스톤 아일랜드',
-        'stone island',
-    ],
-    # =========================
-    # Shoes / sneakers
-    # =========================
-    'converse': [
-        '컨버스',
-        'converse',
-    ],
-    'vans': [
-        '반스',
-        'vans',
-    ],
-    'dr. martens': [
-        '닥터마틴',
-        '닥마',
-        'dr martens',
-        'dr. martens',
-    ],
-    'timberland': [
-        '팀버랜드',
-        'timberland',
-    ],
-    'birkenstock': [
-        '버켄스탁',
-        'birkenstock',
-    ],
-    'crocs': [
-        '크록스',
-        'crocs',
-    ],
-    'ugg': [
-        '어그',
-        'ugg',
-    ],
-    'golden goose': [
-        '골든구스',
-        'golden goose',
-    ],
-    # =========================
-    # Bags / accessories
-    # =========================
-    'porter': [
-        '포터',
-        'porter',
-        '요시다포터',
-        '요시다 포터',
-    ],
-    'tumi': [
-        '투미',
-        'tumi',
-    ],
-    'samsonite': [
-        '샘소나이트',
-        'samsonite',
-    ],
-    'longchamp': [
-        '롱샴',
-        'longchamp',
-    ],
-    'coach': [
-        '코치',
-        'coach',
-    ],
-    'michael kors': [
-        '마이클코어스',
-        '마이클 코어스',
-        'michael kors',
-    ],
-    'tory burch': [
-        '토리버치',
-        '토리 버치',
-        'tory burch',
-    ],
-    # =========================
-    # Korean / contemporary designer
-    # =========================
-    'andersson bell': [
-        '앤더슨벨',
-        '앤더슨 벨',
-        'andersson bell',
-    ],
-    'ader error': [
-        '아더에러',
-        '아더 에러',
-        'ader error',
-    ],
-    'wooyoungmi': [
-        '우영미',
-        'wooyoungmi',
-    ],
-    'juun.j': [
-        '준지',
-        'juun j',
-        'juun.j',
-    ],
-    'low classic': [
-        '로우클래식',
-        '로우 클래식',
-        'low classic',
-    ],
-    'matin kim': [
-        '마뗑킴',
-        '마틴킴',
-        'matin kim',
-    ],
-    'emis': [
-        '이미스',
-        'emis',
-    ],
-    'covernat': [
-        '커버낫',
-        'covernat',
-    ],
+    'jil sander': ['질샌더', '질 샌더', 'jil sander'],
+    'thom browne': ['톰브라운', '톰 브라운', 'thom browne'],
+    'moncler': ['몽클레어', 'moncler'],
+    'stone island': ['스톤아일랜드', '스톤 아일랜드', 'stone island'],
+    'converse': ['컨버스', 'converse'],
+    'vans': ['반스', 'vans'],
+    'dr. martens': ['닥터마틴', '닥마', 'dr martens', 'dr. martens'],
+    'timberland': ['팀버랜드', 'timberland'],
+    'birkenstock': ['버켄스탁', 'birkenstock'],
+    'crocs': ['크록스', 'crocs'],
+    'ugg': ['어그', 'ugg'],
+    'golden goose': ['골든구스', 'golden goose'],
+    'porter': ['포터', 'porter', '요시다포터', '요시다 포터'],
+    'tumi': ['투미', 'tumi'],
+    'samsonite': ['샘소나이트', 'samsonite'],
+    'longchamp': ['롱샴', 'longchamp'],
+    'coach': ['코치', 'coach'],
+    'michael kors': ['마이클코어스', '마이클 코어스', 'michael kors'],
+    'tory burch': ['토리버치', '토리 버치', 'tory burch'],
+    'andersson bell': ['앤더슨벨', '앤더슨 벨', 'andersson bell'],
+    'ader error': ['아더에러', '아더 에러', 'ader error'],
+    'wooyoungmi': ['우영미', 'wooyoungmi'],
+    'juun.j': ['준지', 'juun j', 'juun.j'],
+    'low classic': ['로우클래식', '로우 클래식', 'low classic'],
+    'matin kim': ['마뗑킴', '마틴킴', 'matin kim'],
+    'emis': ['이미스', 'emis'],
+    'covernat': ['커버낫', 'covernat'],
     'marithe francois girbaud': [
         '마리떼',
         '마리떼프랑소와저버',
         'marithe',
         'marithe francois girbaud',
     ],
-    'kirsh': [
-        '키르시',
-        'kirsh',
-    ],
-    'mahagrid': [
-        '마하그리드',
-        'mahagrid',
-    ],
-    'mlb': [
-        'mlb',
-        '엠엘비',
-    ],
+    'kirsh': ['키르시', 'kirsh'],
+    'mahagrid': ['마하그리드', 'mahagrid'],
+    'mlb': ['mlb', '엠엘비'],
 }
 
 BRAND_FINE_PRIOR: dict[str, dict[str, float]] = {
@@ -863,7 +484,6 @@ def normalize_text_for_brand(text: str) -> str:
 
 def extract_brand_name(title: str, content: str) -> str:
     text = normalize_text_for_brand(f'{title}\n{content}')
-
     matched: list[tuple[str, str]] = []
 
     for canonical_brand, aliases in BRAND_ALIASES.items():
@@ -872,7 +492,6 @@ def extract_brand_name(title: str, content: str) -> str:
             if not alias_norm:
                 continue
 
-            # 영어는 단어 경계 우선
             if (
                 re.search(rf'(?<![a-z0-9]){re.escape(alias_norm)}(?![a-z0-9])', text)
                 or alias_norm in text
@@ -1348,6 +967,10 @@ def sigmoid_probs(scores: torch.Tensor) -> torch.Tensor:
     return torch.sigmoid(scores)
 
 
+def softmax_confidence(scores: torch.Tensor) -> float:
+    return float(torch.softmax(scores, dim=0).max().item())
+
+
 def topk(
     scores: torch.Tensor, labels: list[str], k: int = 3
 ) -> list[tuple[str, float]]:
@@ -1362,11 +985,6 @@ def top1_margin(scores: torch.Tensor) -> float:
     if vals.numel() < 2:
         return float('inf')
     return float((vals[0] - vals[1]).item())
-
-
-def top1_prob(scores: torch.Tensor) -> float:
-    probs = sigmoid_probs(scores)
-    return float(probs.max().item())
 
 
 def top1_top2_ratio(scores: torch.Tensor) -> float:
@@ -1449,7 +1067,7 @@ def classify_2stage(
 
     coarse_top = topk(coarse_scores, coarse_labels, k=TOPK)
     coarse_pred = coarse_top[0][0]
-    coarse_conf = top1_prob(coarse_scores)
+    coarse_conf = softmax_confidence(coarse_scores)
     coarse_margin = top1_margin(coarse_scores)
     coarse_ratio = top1_top2_ratio(coarse_scores)
 
@@ -1471,7 +1089,7 @@ def classify_2stage(
 
     fine_top = topk(fine_scores, fine_labels, k=TOPK)
     fine_pred = fine_top[0][0]
-    fine_conf = top1_prob(fine_scores)
+    fine_conf = softmax_confidence(fine_scores)
     fine_margin = top1_margin(fine_scores)
     fine_ratio = top1_top2_ratio(fine_scores)
 
@@ -1495,21 +1113,27 @@ def classify_2stage(
         ):
             image_text_disagree = True
 
+    # ✅ truly ambiguous일 때만 unknown
+    very_low = fine_conf < 0.12 and fine_margin < 0.015 and coarse_margin < 0.03
+
     final_label = fine_pred
     triage = 'auto_accept'
     review_reason = ''
 
-    if coarse_low and fine_low:
+    if coarse_low and fine_low and very_low:
         final_label = 'unknown'
         triage = 'review'
-        review_reason = 'coarse_and_fine_low_conf'
+        review_reason = 'very_low_conf_unknown'
     elif fine_low:
+        final_label = fine_pred
         triage = 'review'
         review_reason = 'fine_low_conf'
     elif coarse_low:
+        final_label = fine_pred
         triage = 'review'
         review_reason = 'coarse_low_conf'
     elif image_text_disagree:
+        final_label = fine_pred
         triage = 'review'
         review_reason = 'image_text_disagree'
 
@@ -1620,6 +1244,8 @@ def main() -> None:
     if 'content' not in df.columns:
         df['content'] = ''
 
+    df['id'] = df['id'].astype(str).str.strip()
+
     print('CSV_PATH:', CSV_PATH.resolve())
     print('IMG_DIR :', IMG_DIR.resolve())
     print('DEVICE  :', DEVICE)
@@ -1630,7 +1256,7 @@ def main() -> None:
     print('df rows :', len(df))
     print('root image files:', root_image_count)
 
-    df_ids = set(df['id'].astype(str).str.strip())
+    df_ids = set(df['id'])
     img_ids = {
         p.stem.strip()
         for p in IMG_DIR.iterdir()
@@ -1641,9 +1267,8 @@ def main() -> None:
     print('PRECHECK df-only :', len(df_ids - img_ids))
     print('PRECHECK img-only:', len(img_ids - df_ids))
 
-    # map image paths
     paths_by_id: dict[str, Path] = {}
-    for item_id in df['id'].astype(str).str.strip():
+    for item_id in df['id']:
         p = find_image_by_id(IMG_DIR, item_id)
         if p is not None:
             paths_by_id[item_id] = p
@@ -1651,7 +1276,6 @@ def main() -> None:
     print(f'Loading model: {MODEL_NAME}')
     model, processor = load_siglip2_model_and_processor()
 
-    # prompt embeddings
     coarse_labels, coarse_embs_cpu, _ = build_label_text_embeddings(
         model, processor, COARSE_PROMPTS
     )
