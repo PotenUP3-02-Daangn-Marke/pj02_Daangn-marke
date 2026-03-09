@@ -1,0 +1,718 @@
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+import pandas as pd
+from tqdm import tqdm  # 진행률 표시를 위한 라이브러리 추가
+
+INPUT_CSV = Path('./data/csv/merged_dedup_siglip2_labeled.csv')
+OUTPUT_CSV = Path('./data/csv/merged_dedup_siglip2_labeled_brand_enriched.csv')
+
+TITLE_COL = 'title'
+CONTENT_COL = 'content'
+BRAND_COL = 'brandName'
+
+OVERWRITE_EXISTING = True
+SAVE_DEBUG_COLS = False
+
+BRAND_ALIASES: dict[str, list[str]] = {
+    # =========================
+    # Premium / Luxury
+    # =========================
+    'gucci': ['구찌', 'gucci', 'gucci kids', 'gg', 'gucci gg', '구찌 gg'],
+    'chanel': ['샤넬', 'chanel'],
+    'louis vuitton': ['루이비통', '루이 비통', 'louis vuitton', 'lvuitton'],
+    'hermes': ['에르메스', 'hermes'],
+    'prada': ['프라다', 'prada'],
+    'miu miu': ['미우미우', '미우 미우', 'miu miu'],
+    'celine': ['셀린느', '셀린', 'celine'],
+    'dior': ['디올', 'christian dior', 'dior'],
+    'saint laurent': [
+        '생로랑',
+        '입생로랑',
+        'saint laurent',
+        'ysl',
+        'yves saint laurent',
+    ],
+    'balenciaga': ['발렌시아가', 'balenciaga'],
+    'givenchy': ['지방시', 'givenchy'],
+    'valentino': ['발렌티노', 'valentino'],
+    'fendi': ['펜디', 'fendi'],
+    'bottega veneta': ['보테가베네타', '보테가 베네타', 'bottega veneta'],
+    'loewe': ['로에베', 'loewe'],
+    'marni': ['마르니', 'marni'],
+    'maison margiela': [
+        '메종마르지엘라',
+        '메종 마르지엘라',
+        'maison margiela',
+        'margiela',
+    ],
+    'jil sander': ['질샌더', '질 샌더', 'jil sander'],
+    'thom browne': ['톰브라운', '톰 브라운', 'thom browne'],
+    'moncler': ['몽클레어', 'moncler'],
+    'stone island': ['스톤아일랜드', '스톤 아일랜드', 'stone island'],
+    'brunello cucinelli': [
+        '브루넬로 쿠치넬리',
+        '브루넬로쿠치넬리',
+        'brunello cucinelli',
+        'cucinelli',
+        '쿠치넬리',
+        '브루넬로',
+    ],
+    'loro piana': ['로로피아나', '로로 피아나', 'loro piana'],
+    'zegna': ['제냐', '에르메네질도 제냐', 'zegna', 'ermenegildo zegna'],
+    'tom ford': ['톰포드', '톰 포드', 'tom ford'],
+    'burberry': ['버버리', 'burberry'],
+    'mulberry': ['멀버리', 'mulberry'],
+    'alexander mcqueen': [
+        '알렉산더맥퀸',
+        '알렉산더 맥퀸',
+        'alexander mcqueen',
+        'mcqueen',
+    ],
+    'roger vivier': ['로저비비에', '로저 비비에', 'roger vivier'],
+    'jimmy choo': ['지미추', '지미 추', 'jimmy choo'],
+    'manolo blahnik': ['마놀로블라닉', '마놀로 블라닉', 'manolo blahnik'],
+    'salvatore ferragamo': ['페라가모', 'salvatore ferragamo', 'ferragamo'],
+    'max mara': ['막스마라', '막스 마라', 'max mara', 's max mara', 'sportmax'],
+    'etro': ['에트로', 'etro'],
+    'moschino': ['모스키노', 'moschino'],
+    'versace': ['베르사체', 'versace'],
+    'dolce & gabbana': ['돌체앤가바나', '돌체 가바나', 'dolce & gabbana', 'd g'],
+    'bvlgari': ['불가리', 'bvlgari'],
+    'mcm': ['엠씨엠', 'mcm'],
+    'tods': ['토즈', 'tods', "tod's"],
+    'delvaux': ['델보', 'delvaux'],
+    'goyard': ['고야드', 'goyard'],
+    'daks': ['닥스', 'daks', '닥스 키즈', '닥스키즈', 'daks kids'],
+    'christian dior': ['디올', 'christian dior', 'dior', '크리스찬 디올'],
+    'kenzo': [
+        '겐조',
+        'kenzo',
+        'kenzo kids',
+        '겐조 키즈',
+        '겐조키즈',
+        '켄조',
+        '켄조키즈',
+    ],
+    # =========================
+    # Designer / Contemporary
+    # =========================
+    'ami': ['아미', 'ami', 'ami paris'],
+    'apc': ['아페쎄', 'a p c', 'apc', 'a.p.c.'],
+    'isabel marant': ['이자벨마랑', '이자벨 마랑', 'isabel marant'],
+    'maje': ['마쥬', 'maje'],
+    'sandro': ['산드로', 'sandro'],
+    'claudie pierlot': ['끌로디피에로', '끌로디 피에로', 'claudie pierlot'],
+    'theory': ['띠어리', 'theory'],
+    'vince': ['빈스', 'vince'],
+    'rag & bone': ['랙앤본', 'rag & bone', 'rag and bone'],
+    'club monaco': ['클럽모나코', '클럽 모나코', 'club monaco'],
+    'reiss': ['리스', 'reiss'],
+    'cos': ['코스', 'cos'],
+    'arket': ['아르켓', 'arket'],
+    'massimo dutti': ['마시모두띠', '마시모 두띠', 'massimo dutti'],
+    'weekday': ['위크데이', 'weekday'],
+    'other stories': ['앤아더스토리즈', '& other stories', 'and other stories'],
+    'acne studios': ['아크네', '아크네 스튜디오', 'acne studios'],
+    'our legacy': ['아워레가시', '아워 레가시', 'our legacy'],
+    'ganni': ['가니', 'ganni'],
+    'toteme': ['토템', 'toteme'],
+    'series': ['시리즈', 'series'],
+    'iro': ['이로', 'iro'],
+    'kelvin klein': ['캘빈클라인', '캘빈 클라인', 'kelvin klein', 'calvin klein'],
+    'cp company': [
+        '씨피컴퍼니',
+        'cp company',
+        'c.p. company',
+        'cp 컴퍼니',
+        'c.p 컴퍼니',
+        'cp컴퍼니',
+        'c.p컴퍼니',
+        'cp컴퍼니',
+        'c.p.컴퍼니',
+    ],
+    # =========================
+    # Outdoor / Sports / Athletic
+    # =========================
+    'nike': ['나이키', 'nike', 'nike sportswear', 'nike acg'],
+    'adidas': ['아디다스', '아디', 'adidas', 'adidas originals', 'yeezy'],
+    'new balance': ['뉴발란스', '뉴발', 'new balance'],
+    'puma': ['푸마', 'puma'],
+    'reebok': ['리복', 'reebok'],
+    'asics': ['아식스', 'asics'],
+    'under armour': ['언더아머', '언더 아머', 'under armour', 'under armor'],
+    'fila': ['휠라', 'fila'],
+    'kappa': ['카파', 'kappa'],
+    'descente': ['데상트', 'descente'],
+    'mizuno': ['미즈노', 'mizuno'],
+    'salomon': ['살로몬', 'salomon'],
+    'hoka': ['호카', '호카오네오네', 'hoka', 'hoka one one'],
+    'on': ['온러닝', '온', 'on running', 'on'],
+    'brooks': ['브룩스', 'brooks running', 'brooks'],
+    'saucony': ['써코니', 'saucony'],
+    'merrell': ['머렐', 'merrell'],
+    "arc'teryx": ['아크테릭스', "arc'teryx", 'arcteryx'],
+    'patagonia': ['파타고니아', 'patagonia'],
+    'columbia': ['컬럼비아', 'columbia', '콜롬비아'],
+    'montbell': ['몽벨', 'mont bell', 'montbell'],
+    'millet': ['밀레', 'millet'],
+    'blackyak': ['블랙야크', 'blackyak', 'black yak'],
+    'k2': ['케이투', 'k2'],
+    'nepa': ['네파', 'nepa'],
+    'discovery expedition': [
+        '디스커버리',
+        '디스커버리 익스페디션',
+        'discovery',
+        'discovery expedition',
+    ],
+    'national geographic': [
+        '내셔널지오그래픽',
+        '내셔널 지오그래픽',
+        'national geographic',
+    ],
+    'snow peak': ['스노우피크', 'snow peak'],
+    'the north face': [
+        '노스페이스',
+        '노페',
+        'north face',
+        'the north face',
+        'thenorthface',
+        'tnf',
+    ],
+    'helly hansen': ['헬리한센', '헬리 한센', 'helly hansen'],
+    'mammut': ['마무트', 'mammut'],
+    'rab': ['랩', 'rab'],
+    'nanga': ['난가', 'nanga'],
+    'peak performance': ['피크퍼포먼스', '피크 퍼포먼스', 'peak performance'],
+    'oakley': ['오클리', 'oakley'],
+    'mlb': ['엠엘비', 'mlb', '엠엘비키즈', 'mlb kids', 'mlb키즈', '엠엘비 키즈'],
+    'new era': [
+        '뉴에라',
+        'new era',
+        '뉴에라키즈',
+        'new era kids',
+        'new era키즈',
+        '뉴에라 키즈',
+        'era kids',
+        'era',
+    ],
+    'wilson': ['윌슨', 'wilson'],
+    'head': ['헤드', 'head'],
+    'yonex': ['요넥스', 'yonex'],
+    'lululemon': ['룰루레몬', 'lululemon'],
+    'nba': [
+        'NBA',
+        '엔비에이',
+        'nba',
+        'nba kids',
+        '엔비에이키즈',
+        'nba키즈',
+        '엔비에이 키즈',
+    ],
+    'kolon sport': ['코오롱스포츠', '코오롱 스포츠', 'kolon sport'],
+    'eider': ['아이더', 'eider'],
+    'mojosphine': ['모조에스핀', 'mojo.s.phine'],
+    # =========================
+    # Denim / American casual / heritage
+    # =========================
+    "levi's": ['리바이스', "levi's", 'levis', 'levi strauss'],
+    'lee': ['lee'],
+    'edwin': ['에드윈', 'edwin'],
+    'nudie jeans': ['누디진', '누디진스', 'nudie jeans', 'nudie'],
+    'diesel': ['디젤', 'diesel'],
+    'carhartt': ['칼하트', 'carhartt', 'carhartt wip'],
+    'dickies': ['디키즈', 'dickies'],
+    'ben davis': ['벤데이비스', '벤 데이비스', 'ben davis'],
+    'wrangler': ['랭글러', 'wrangler'],
+    'red wing': ['레드윙', '레드 윙', 'red wing'],
+    'timberland': ['팀버랜드', 'timberland'],
+    'll bean': ['엘엘빈', '엘엘 빈', 'll bean', 'l l bean', 'l.l.bean'],
+    'j.crew': ['제이크루', 'j crew', 'j.crew'],
+    'abercrombie & fitch': [
+        '아베크롬비',
+        '아베크롬비앤피치',
+        'abercrombie',
+        'abercrombie & fitch',
+        'a&f',
+    ],
+    'hollister': ['홀리스터', 'hollister'],
+    'american eagle': ['아메리칸이글', '아메리칸 이글', 'american eagle'],
+    'banana republic': ['바나나리퍼블릭', '바나나 리퍼블릭', 'banana republic'],
+    'gap': [
+        '갭',
+        'gap',
+        'gap kids',
+        'gapkids',
+        '갭키즈',
+        '갭 키즈',
+        'baby gap',
+        'babygap',
+        '갭베이비',
+        '갭 베이비',
+    ],
+    'old navy': ['올드네이비', '올드 네이비', 'old navy'],
+    'guess': ['게스', 'guess'],
+    'louis castel': ['루이까스텔', '루이 카스텔', 'louis castel', '루이카스텔'],
+    # =========================
+    # Polo / prep / shirt-heavy
+    # =========================
+    'polo ralph lauren': [
+        '폴로',
+        '폴로랄프로렌',
+        '랄프로렌',
+        '랄프 로렌',
+        'polo ralph lauren',
+        'ralph lauren',
+        'polo by ralph lauren',
+        '폴로 바이 랄프로렌',
+        '폴로랄프로렌키즈',
+        '랄프로렌키즈',
+        'polo kids',
+        'ralph lauren kids',
+        '폴로키즈',
+        '랄프 로렌 키즈',
+        '폴로 키즈',
+        'polo ralph lauren kids',
+        '폴로 보이즈',
+        '폴로보이즈',
+        '폴로 걸즈',
+        '폴로걸즈',
+        'polo',
+    ],
+    'lacoste': ['라코스테', 'lacoste', '라코스테 라이브'],
+    'brooks brothers': ['브룩스브라더스', '브룩스 브라더스', 'brooks brothers'],
+    'beams': ['빔즈', 'beams', 'beams plus'],
+    'gant': ['간트', 'gant'],
+    'tommy hilfiger': ['타미힐피거', '타미 힐피거', 'tommy hilfiger', 'tommy'],
+    'nautica': ['노티카', 'nautica'],
+    'fred perry': ['프레드페리', '프레드 페리', 'fred perry'],
+    'beanpole': ['빈폴', 'beanpole', 'beanpole kids', '빈폴키즈', '빈폴 키즈'],
+    'hazzys': ['헤지스', 'hazzys', 'hazzys kids', '헤지스키즈', '헤지스 키즈'],
+    # =========================
+    # Fast fashion / SPA / mall brands
+    # =========================
+    'uniqlo': ['유니클로', 'uniqlo', '유니클로u', 'uniqlo u'],
+    'gu': ['지유', 'gu'],
+    'zara': [
+        '자라',
+        'zara',
+        'zara man',
+        'zaraman',
+        'zara kids',
+        'zara baby',
+        '자라키즈',
+    ],
+    'h&m': ['에이치앤엠', '에이치 앤 엠', 'h&m'],
+    'spao': ['스파오', 'spao'],
+    '8seconds': ['에잇세컨즈', '8seconds', '8 seconds'],
+    'topten': ['탑텐', 'topten', 'topten10', 'topten 10', '탑텐키즈', 'topten kids'],
+    'giordano': ['지오다노', 'giordano'],
+    'codes combine': ['코데즈컴바인', 'codes combine'],
+    'tngt': ['티엔지티', 'tngt', 'tngtw'],
+    'system homme': ['시스템옴므', '시스템 옴므', 'system homme'],
+    'time homme': ['타임옴므', '타임 옴므', 'time homme'],
+    'system': ['시스템', 'system'],
+    'time': ['타임', 'time'],
+    'mine': ['마인', 'mine'],
+    'sjsj': ['sjsj'],
+    'mango': ['망고', 'mango'],
+    'muji': ['무인양품', '무지', 'muji'],
+    # =========================
+    # Korean designer / street / domestic
+    # =========================
+    'andersson bell': ['앤더슨벨', '앤더슨 벨', 'andersson bell'],
+    'ader error': ['아더에러', '아더 에러', 'ader error'],
+    'wooyoungmi': ['우영미', 'wooyoungmi'],
+    'juun.j': ['준지', 'juun j', 'juun.j'],
+    'low classic': ['로우클래식', '로우 클래식', 'low classic'],
+    'matin kim': ['마뗑킴', '마틴킴', 'matin kim'],
+    'emis': ['이미스', 'emis'],
+    'covernat': ['커버낫', 'covernat'],
+    'marithe francois girbaud': [
+        '마리떼',
+        '마리떼프랑소와저버',
+        '마리떼 프랑소와 저버',
+        'marithe',
+        'marithe francois girbaud',
+        'marithe françois girbaud',
+    ],
+    'kirsh': ['키르시', 'kirsh'],
+    'mahagrid': ['마하그리드', 'mahagrid'],
+    'thisisneverthat': ['디스이즈네버댓', 'thisisneverthat', 'tnn'],
+    'musinsa standard': ['무신사스탠다드', '무신사 스탠다드', 'musinsa standard'],
+    'lmc': ['엘엠씨', 'lmc', 'lost management cities'],
+    '87mm': ['87mm', '팔칠엠엠'],
+    'oioi': ['5252', 'oioi', '오아이오아이'],
+    'romantic crown': ['로맨틱크라운', '로맨틱 크라운', 'romantic crown'],
+    'insilence': ['인사일런스', 'insilence'],
+    'document': ['도큐먼트', 'document'],
+    'ordinary people': ['오디너리피플', '오디너리 피플', 'ordinary people'],
+    'recto': ['렉토', 'recto'],
+    'the barnnet': ['더바넷', '더 바넷', 'the barnnet'],
+    'depound': ['드파운드', 'depound'],
+    'fallett': ['팔렛', 'fallett'],
+    'aeae': ['aeae'],
+    'sinoon': ['시눈', 'sinoon'],
+    'rest & recreation': ['레스트앤레크리에이션', 'rest & recreation', 'rrace'],
+    'code graphy': ['코드그라피', 'code graphy'],
+    'whoau': ['후아유', 'whoau'],
+    'on and on': ['온앤온', 'on and on'],
+    # =========================
+    # Street / skate / sneaker / hype
+    # =========================
+    'stussy': ['스투시', 'stussy'],
+    'supreme': ['슈프림', 'supreme'],
+    'palace': ['팔라스', 'palace'],
+    'bape': ['베이프', 'bape', 'a bathing ape'],
+    'human made': ['휴먼메이드', '휴먼 메이드', 'human made'],
+    'noah': ['노아', 'noah'],
+    'kith': ['키스', 'kith'],
+    'wtaps': ['더블탭스', 'wtaps'],
+    'neighborhood': ['네이버후드', 'neighborhood'],
+    'vans': ['반스', 'vans'],
+    'converse': ['컨버스', 'converse', '척테일러', 'chuck taylor'],
+    'dc shoes': ['디씨', 'dc shoes'],
+    'thrasher': ['스래셔', 'thrasher'],
+    # =========================
+    # Shoes / bags / accessories
+    # =========================
+    'dr. martens': ['닥터마틴', '닥마', 'dr martens', 'dr. martens'],
+    'birkenstock': ['버켄스탁', 'birkenstock'],
+    'crocs': ['크록스', 'crocs'],
+    'ugg': ['어그', 'ugg'],
+    'golden goose': ['골든구스', 'golden goose'],
+    'common projects': ['커먼프로젝트', '커먼 프로젝트', 'common projects'],
+    'autry': ['오트리', 'autry'],
+    'veja': ['베자', 'veja'],
+    'porter': ['포터', '요시다포터', '요시다 포터', 'porter', 'porter yoshida'],
+    'tumi': ['투미', 'tumi'],
+    'samsonite': ['샘소나이트', 'samsonite'],
+    'longchamp': ['롱샴', 'longchamp'],
+    'coach': ['코치', 'coach'],
+    'michael kors': ['마이클코어스', '마이클 코어스', 'michael kors'],
+    'tory burch': ['토리버치', '토리 버치', 'tory burch'],
+    'furla': ['훌라', 'furla'],
+    'lesportsac': ['레스포색', 'lesportsac'],
+    'jansport': ['잔스포츠', 'jansport'],
+    'eastpak': ['이스트팩', 'eastpak'],
+    'kipling': ['키플링', 'kipling'],
+    # =========================
+    # Kids / baby-focused brands often seen in resale
+    # =========================
+    'familiar': ['파밀리아', 'familiar'],
+    'monbebe': ['몽베베', 'monbebe'],
+    'bebedepino': ['베베드피노', '베베 드 피노', 'bebedepino', 'bebe de pino'],
+    'moimoln': ['모이몰른', 'moimoln'],
+    'blanc101': ['블랑101', 'blanc101'],
+    'allo lugh': ['알로앤루', '알로 루', 'allo lugh'],
+    'petit bateau': ['쁘띠바또', '쁘띠 바또', 'petit bateau'],
+    'konges slojd': ['콩제슬래드', '콩제 슬래드', 'konges slojd'],
+    'minirodini': ['미니로디니', 'minirodini', 'mini rodini'],
+    'jacadi': ['자카디', 'jacadi'],
+    'bonpoint': ['봉쁘앙', 'bonpoint'],
+    'limitedoudou': ['리미떼두두', '리미떼 두두', 'limitedoudou'],
+}
+
+
+VERY_RISKY_SHORT_ALIASES = {'lee', 'gu', 'hm', 'nk', 'nb', 'ua', 'lv', 'ysl'}
+
+TITLE_SAFE_SHORT_ALIASES = {
+    'gap',
+    'tngt',
+    'mlb',
+    'nba',
+    'cos',
+    'k2',
+    'ugg',
+    'apc',
+    'lmc',
+    'sjsj',
+    'mcm',
+}
+
+BRAND_CONTEXT_HINTS = {
+    '브랜드',
+    '정품',
+    '로고',
+    '매장판',
+    '백화점',
+    '공식',
+    '라벨',
+    '택',
+    'brand',
+    'logo',
+    'authentic',
+    'genuine',
+    'retail',
+    'label',
+    'tag',
+}
+GENERIC_PRODUCT_WORDS = {
+    '상의',
+    '하의',
+    '자켓',
+    '코트',
+    '패딩',
+    '니트',
+    '가디건',
+    '맨투맨',
+    '후드',
+    '셔츠',
+    '청바지',
+    '데님',
+    '팬츠',
+    '치마',
+    '스커트',
+    '원피스',
+    '운동화',
+    '스니커즈',
+    '가방',
+    '백팩',
+    '크로스백',
+    '토트백',
+    '모자',
+    '키즈',
+    '아동',
+    '유아',
+    '여성',
+    '남성',
+    '주니어',
+    'xs',
+    's',
+    'm',
+    'l',
+    'xl',
+    '새상품',
+    '새제품',
+    '중고',
+    '미사용',
+}
+
+
+def normalize_text_for_brand(text: str) -> str:
+    if not isinstance(text, str):
+        return ''
+    text = text.lower()
+    text = re.sub(r'[^a-z0-9가-힣\s]+', ' ', text)
+    return re.sub(r'\s+', ' ', text).strip()
+
+
+def has_korean(text: str) -> bool:
+    return bool(re.search(r'[가-힣]', text))
+
+
+# ==========================================
+# 통합 정규식(Combined Regex)과 매핑 테이블 구축
+# ==========================================
+ALIAS_TO_INFO = {}
+ESCAPED_ALIASES = []
+
+for canonical_brand, aliases in BRAND_ALIASES.items():
+    canonical_norm = normalize_text_for_brand(canonical_brand)
+
+    for alias in aliases:
+        alias_norm = normalize_text_for_brand(alias)
+        if not alias_norm:
+            continue
+
+        if alias_norm not in ALIAS_TO_INFO:
+            escaped = re.escape(alias_norm).replace(r'\ ', r'\s+')
+            ESCAPED_ALIASES.append(escaped)
+
+            ALIAS_TO_INFO[alias_norm] = {
+                'canonical_brand': canonical_brand,
+                'canonical_norm': canonical_norm,
+                'alias_norm': alias_norm,
+                'alias_len': len(alias_norm.replace(' ', '')),
+                'token_count': len(alias_norm.split()),
+                'has_korean': has_korean(alias_norm),
+                'pattern': re.compile(rf'(?<![a-z0-9가-힣]){escaped}(?![a-z0-9가-힣])'),
+            }
+
+ESCAPED_ALIASES.sort(key=len, reverse=True)
+COMBINED_PATTERN = re.compile(
+    rf'(?<![a-z0-9가-힣])({"|".join(ESCAPED_ALIASES)})(?![a-z0-9가-힣])'
+)
+# ==========================================
+
+
+def get_context_window(text: str, start: int, end: int, window: int = 24) -> str:
+    left = max(0, start - window)
+    right = min(len(text), end + window)
+    return text[left:right]
+
+
+def contains_product_word_nearby(ctx: str) -> bool:
+    return any(w in ctx for w in GENERIC_PRODUCT_WORDS)
+
+
+def score_brand_match(
+    alias_info, in_title, in_content, full_text, match_start, match_end
+) -> float:
+    score = 0.0
+    alias_norm = alias_info['alias_norm']
+    ctx = get_context_window(full_text, match_start, match_end, window=24)
+
+    score += min(alias_info['alias_len'], 20) * 0.22
+
+    if alias_norm == alias_info['canonical_norm']:
+        score += 2.0
+    if alias_info['token_count'] >= 2:
+        score += 1.3
+    if alias_info['has_korean']:
+        score += 1.0
+
+    if in_title:
+        score += 3.0
+    elif in_content:
+        score += 1.2
+
+    if any(h in ctx for h in BRAND_CONTEXT_HINTS):
+        score += 1.2
+
+    if contains_product_word_nearby(ctx):
+        score += 0.8
+
+    if alias_norm in VERY_RISKY_SHORT_ALIASES:
+        score -= 3.5
+        if in_title:
+            score += 1.0
+        if any(h in ctx for h in BRAND_CONTEXT_HINTS):
+            score += 0.8
+    elif alias_norm in TITLE_SAFE_SHORT_ALIASES:
+        if in_title:
+            score += 2.0
+        else:
+            score -= 0.8
+
+    if alias_info['alias_len'] <= 2:
+        score -= 1.5
+    elif alias_info['alias_len'] == 3:
+        score -= 0.3
+
+    return score
+
+
+def acceptance_threshold(
+    alias_norm: str, canonical_norm: str, in_title: bool, has_kr: bool
+) -> float:
+    alias_len = len(alias_norm.replace(' ', ''))
+    if has_kr and alias_len >= 2:
+        return 1.3
+    if alias_norm == canonical_norm:
+        return 1.5 if in_title else 2.0
+    if alias_norm in TITLE_SAFE_SHORT_ALIASES:
+        return 2.0 if in_title else 3.0
+    if alias_norm in VERY_RISKY_SHORT_ALIASES:
+        return 3.8 if in_title else 5.0
+    if alias_len >= 6:
+        return 1.8
+    return 2.5
+
+
+def extract_brand_name_fast(
+    title_norm: str, content_norm: str, full_text: str
+) -> tuple[str, str, float]:
+    matches = []
+
+    for m in COMBINED_PATTERN.finditer(full_text):
+        s, e = m.span()
+        matched_str = m.group(1)
+        matched_norm = re.sub(r'\s+', ' ', matched_str)
+        alias_info = ALIAS_TO_INFO.get(matched_norm)
+
+        if not alias_info:
+            continue
+
+        title_len = len(title_norm)
+        in_title = s < title_len
+        in_content = e > title_len
+
+        score = score_brand_match(alias_info, in_title, in_content, full_text, s, e)
+
+        matches.append(
+            (
+                alias_info['canonical_brand'],
+                alias_info['alias_norm'],
+                score,
+                alias_info['alias_len'],
+                s,
+                in_title,
+                alias_info['has_korean'],
+            )
+        )
+
+    if not matches:
+        return 'unknown', '', 0.0
+
+    matches.sort(key=lambda x: (x[2], x[5], x[3], -x[4]), reverse=True)
+    best_brand, best_alias, best_score, _, _, in_title, has_kr = matches[0]
+
+    canonical_norm = ALIAS_TO_INFO[best_alias]['canonical_norm']
+    th = acceptance_threshold(best_alias, canonical_norm, in_title, has_kr)
+
+    if best_score < th:
+        return 'unknown', best_alias, best_score
+
+    return best_brand, best_alias, best_score
+
+
+def main() -> None:
+    print('데이터를 불러오는 중입니다...')
+    df = pd.read_csv(INPUT_CSV)
+
+    df[TITLE_COL] = df.get(TITLE_COL, '').fillna('').astype(str)
+    df[CONTENT_COL] = df.get(CONTENT_COL, '').fillna('').astype(str)
+
+    print('텍스트 정규화 중 (Pandas 벡터화)...')
+    titles_norm = df[TITLE_COL].apply(normalize_text_for_brand)
+    contents_norm = df[CONTENT_COL].apply(normalize_text_for_brand)
+    full_texts = titles_norm + '\n' + contents_norm
+
+    new_brands = []
+    aliases = []
+    scores = []
+
+    total_len = len(df)
+    print(f'총 {total_len}개의 데이터에서 브랜드명을 추출합니다.')
+
+    titles_list = titles_norm.tolist()
+    contents_list = contents_norm.tolist()
+    full_texts_list = full_texts.tolist()
+    old_brands = (
+        df.get(BRAND_COL, [''] * total_len).tolist() if not OVERWRITE_EXISTING else None
+    )
+
+    # 🚀 tqdm 적용: 진행률 퍼센트, 남은 시간, 초당 처리 건수 표시
+    for i in tqdm(range(total_len), desc='브랜드 추출 진행률', unit='건'):
+        brand, alias, score = extract_brand_name_fast(
+            titles_list[i], contents_list[i], full_texts_list[i]
+        )
+
+        if OVERWRITE_EXISTING:
+            final_brand = brand
+        else:
+            old_b = str(old_brands[i]).strip()
+            final_brand = old_b if old_b and old_b != 'unknown' else brand
+
+        new_brands.append(final_brand)
+        aliases.append(alias)
+        scores.append(score)
+
+    df[BRAND_COL] = new_brands
+    if SAVE_DEBUG_COLS:
+        df['brand_match_alias'] = aliases
+        df['brand_match_score'] = scores
+
+    print('\n결과를 저장하는 중입니다...')
+    df.to_csv(OUTPUT_CSV, index=False, encoding='utf-8-sig')
+
+    print(f'완료! 결과 파일: {OUTPUT_CSV}')
+    print('\n[추출된 브랜드 상위 30개]')
+    print(df[BRAND_COL].value_counts(dropna=False).head(30).to_string())
+
+
+if __name__ == '__main__':
+    main()
