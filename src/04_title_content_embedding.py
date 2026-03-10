@@ -36,7 +36,7 @@ def create_text_embeddings(df, text_columns):
 
 
 # 사용 예시 (df는 원본 데이터프레임)
-df = pd.read_csv('./data/csv/train_df.csv')
+df = pd.read_csv('./data/csv/team_csv/train_df_enriched.csv')
 
 text_cols = ['title', 'content']
 df_vectorized = create_text_embeddings(df, text_cols)
