@@ -848,7 +848,7 @@ def load_siglip2_model_and_processor() -> tuple[Any, Any]:
     model = (
         AutoModel.from_pretrained(
             MODEL_NAME,
-            torch_dtype=DTYPE,
+            dtype=DTYPE,
             low_cpu_mem_usage=True,
         )
         .to(DEVICE)
