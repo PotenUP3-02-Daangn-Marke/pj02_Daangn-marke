@@ -6,8 +6,8 @@ from pathlib import Path
 import pandas as pd
 from tqdm import tqdm  # 진행률 표시를 위한 라이브러리 추가
 
-INPUT_CSV = Path('./data/csv/train_df.csv')
-OUTPUT_CSV = Path('./data/csv/train_df_enriched.csv')
+INPUT_CSV = Path('./data/csv/parse_brands.csv')
+OUTPUT_CSV = Path('./data/csv/parse_brands_enriched.csv')
 
 TITLE_COL = 'title'
 CONTENT_COL = 'content'
