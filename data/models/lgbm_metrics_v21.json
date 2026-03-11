@@ -1,0 +1,57 @@
+{
+  "valid": {
+    "roc_auc": 0.8054761445364036,
+    "accuracy": 0.7411083929243508,
+    "f1": 0.6237264957264957,
+    "precision": 0.579395325203252,
+    "recall": 0.6754035243595439,
+    "confusion_matrix": [
+      [
+        11192,
+        3311
+      ],
+      [
+        2192,
+        4561
+      ]
+    ]
+  },
+  "test": {
+    "roc_auc": 0.8003689019584167,
+    "accuracy": 0.7386149792999623,
+    "f1": 0.6233220338983051,
+    "precision": 0.5748405652119545,
+    "recall": 0.6807344883755369,
+    "confusion_matrix": [
+      [
+        11103,
+        3400
+      ],
+      [
+        2156,
+        4597
+      ]
+    ]
+  },
+  "n_features": 34,
+  "categorical_features": [
+    "feat_price_bucket",
+    "feat_brandName",
+    "feat_seller_temp_bucket",
+    "feat_label",
+    "feat_coarse_label",
+    "feat_top1_label",
+    "feat_region_id"
+  ],
+  "best_params": {
+    "n_estimators": 1945,
+    "learning_rate": 0.04611819108893845,
+    "num_leaves": 110,
+    "min_child_samples": 100,
+    "subsample": 0.7179171599911441,
+    "colsample_bytree": 0.803520582003886,
+    "reg_alpha": 0.8577660012305288,
+    "reg_lambda": 0.00011981000704943269
+  },
+  "best_valid_auc": 0.8054761445364036
+}
