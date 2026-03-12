@@ -108,7 +108,12 @@ st.markdown(
 
 # ------------------- 백엔드 모듈 임포트 -------------------
 try:
-    from src.predict_pipeline import predict_sell_probability
+    from src.predict_pipeline import (
+        BUY_THRESHOLD,  # 👈 추가
+        calibrate_probability,  # 👈 추가
+        get_brand_and_label,
+        predict_sell_probability,
+    )
     from src.siglip_predictor import SiglipSinglePredictor
 except ImportError:
     st.error(
@@ -127,8 +132,8 @@ def load_all_models():
     # 🚨 바로 여기입니다! 실제 모델 파일이 있는 정확한 경로로 바꿔주세요.
     # (예: 파일이 같은 폴더에 있으면 이름만, 'models' 폴더 안에 있으면 'models/이름.cbm')
 
-    buy_model_path = 'data/models/daangn_buy_predictor_PR.cbm'  # 👈 경로 수정
-    sell_model_path = 'data/models/daangn_sell_predictor_7839.cbm'  # 👈 경로 수정
+    buy_model_path = 'data/models/daangn_buy_predictor_new.cbm'  # 👈 경로 수정
+    sell_model_path = 'data/models/daangn_sell_predictor_new4.cbm'  # 👈 경로 수정
 
     buy_model = CatBoostClassifier()
     if os.path.exists(buy_model_path):
@@ -146,8 +151,74 @@ def load_all_models():
     return buy_model, sell_model, siglip_predictor
 
 
-with st.spinner('AI 엔진 예열 중... 🥕 all rights reserved by 당근막캐'):
+# 🚨 화면 중앙 배치를 위한 임시 컨테이너 및 🔥예열 이모지 적용
+
+loading_space = st.empty()
+
+with loading_space.container():
+    st.markdown(
+        """
+        <style>
+        /* 🚨 핵심 수정: 화면 절대 정중앙을 잡는 마법의 CSS */
+        .custom-loader-container {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 99999; /* 다른 요소들에 절대 가려지지 않음 */
+            width: 100vw;
+        }
+        .loader-row {
+            display: flex;
+            align-items: center;
+            gap: 15px; /* 스피너와 글자 사이 간격 */
+            margin-bottom: 10px;
+        }
+        .custom-spinner {
+            width: 24px;
+            height: 24px;
+            border: 3px solid #f1f3f5;
+            border-top: 3px solid #EF7326; /* 당근마켓 주황색 포인트 */
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .main-text {
+            font-size: 22px; /* 🔥 첫 번째 줄 폰트 키움 */
+            font-weight: bold;
+            color: #212529;
+        }
+        .sub-text {
+            font-size: 14px; /* 두 번째 줄 폰트 작게 */
+            color: #868e96;
+            text-align: center;
+        }
+        </style>
+        
+        <div class="custom-loader-container">
+            <div class="loader-row">
+                <div class="custom-spinner"></div>
+                <div class="main-text">🥕 당근막캐 AI 엔진 🔥 예열 중... 🔥</div>
+            </div>
+            <div class="sub-text">© 2026 당근막캐. All rights reserved.</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # 여기서 실제 백엔드 로딩 수행 (st.spinner 없이 조용히 실행)
     buy_model, sell_model, siglip_predictor = load_all_models()
+
+# 로딩이 끝나면 화면을 깔끔하게 지우고 본 화면 진입
+loading_space.empty()
+# ---------------------------------------------------------
 
 
 def get_image_base64(image_path):
@@ -243,7 +314,11 @@ def load_real_feed_data():
         test_df['is_boosted'] = 0
 
         try:
-            probs = buy_model.predict_proba(test_df)[:, 1] * 100
+            # 1. 구매자 모델의 '날것' 확률들을 뽑아냅니다. (곱하기 100 없앰)
+            raw_probs = buy_model.predict_proba(test_df)[:, 1]
+
+            # 2. 각각의 확률을 BUY_THRESHOLD 기준으로 50% 커트라인 보정합니다.
+            probs = [calibrate_probability(p, BUY_THRESHOLD) for p in raw_probs]
         except:
             import random as rd
 
@@ -253,6 +328,8 @@ def load_real_feed_data():
 
         feed_df['chatCount'] = feed_df['chatCount'].fillna(0).astype(int)
         feed_df['favoriteCount'] = feed_df['favoriteCount'].fillna(0).astype(int)
+        # 👇 추가: 가격이 비어있으면(NaN) 0원으로 처리해서 에러 방지
+        feed_df['price'] = feed_df.get('price', 0).fillna(0).astype(int)
 
         # 목록을 한번 더 섞어서 반환
         return feed_df.sample(frac=1).reset_index(drop=True)
@@ -295,7 +372,7 @@ if st.session_state.page == 'buyer':
             box-shadow: 0 4px 10px rgba(0,0,0,0.2) !important;
             z-index: 9999 !important;
             opacity: 0; 
-            animation: fadeInBtn 0.5s ease-in-out 1.5s forwards; 
+            animation: fadeInBtn 0.5s ease-in-out 0.5s forwards; 
             transition: transform 0.2s;
         }
         @keyframes fadeInBtn {
@@ -492,141 +569,317 @@ if st.session_state.page == 'buyer':
 
 # --- 2. SELLER PAGE (판매자 화면) ---
 elif st.session_state.page == 'seller':
-    # 🌟 1. UI 교정용 고정형 CSS (Drag and Drop 완벽 차단)
+    # 🚨 임시저장 & 작성완료 시 텍스트를 기억하는 콜백 함수
+    def save_draft():
+        st.session_state.draft_title = st.session_state.get('title_input', '')
+        st.session_state.draft_content = st.session_state.get('content_input', '')
+        st.session_state.draft_price = st.session_state.get('price_input', None)
+        st.session_state.page = 'buyer'
+
+    def clear_draft_and_submit():
+        st.session_state.draft_title = ''
+        st.session_state.draft_content = ''
+        st.session_state.draft_price = None
+        st.session_state.page = 'buyer'
+
+    # 🌟 1. UI 교정용 고정형 CSS
     st.markdown(
         """
         <style>
-        .block-container { padding-top: 20px !important; background-color: #FFFFFF; }
+        .block-container { 
+            max-width: 500px !important; margin: 0 auto !important; 
+            padding-top: 20px !important; padding-left: 20px !important; padding-right: 20px !important; 
+            background-color: #FFFFFF !important; 
+        }
         .seller-header {
             display: flex; justify-content: space-between; align-items: center;
-            padding: 15px 20px; border-bottom: 1px solid #f1f3f5;
+            padding: 15px 20px; border-bottom: 1px solid #EAEBEE;
             background-color: #FFFFFF; position: fixed; top: 0; left: 50%;
-            transform: translateX(-50%); width: 500px; max-width: 100%; z-index: 2000;
+            transform: translateX(-50%); width: 100%; max-width: 500px; z-index: 2000;
         }
+
+        /* 🚨 [해결 1] X 버튼 (Secondary) 공중부양 고정 */
+        [data-testid="stButton"] button[kind="secondary"] {
+            position: fixed !important; top: 12px !important; left: calc(50% - 250px + 20px) !important; 
+            background-color: transparent !important; border: none !important;
+            color: #212529 !important; font-size: 24px !important; padding: 0 !important; 
+            width: 30px !important; height: 30px !important; box-shadow: none !important; z-index: 2005 !important;
+        }
+        @media (max-width: 500px) { [data-testid="stButton"] button[kind="secondary"] { left: 20px !important; } }
+
+        /* 🚨 [해결 1] 임시저장 버튼 (Tertiary) 순수 텍스트 디자인으로 고정 */
+        [data-testid="stButton"] button[kind="tertiary"] {
+            position: fixed !important; top: 15px !important; right: calc(50% - 250px + 20px) !important;
+            background-color: transparent !important; border: none !important;
+            color: #adb5bd !important; font-size: 15px !important; padding: 0 !important;
+            font-weight: normal !important; box-shadow: none !important; z-index: 2005 !important;
+            width: auto !important; height: auto !important; min-height: 0 !important;
+        }
+        @media (max-width: 500px) { [data-testid="stButton"] button[kind="tertiary"] { right: 20px !important; } }
+        [data-testid="stButton"] button[kind="tertiary"]:hover { color: #212529 !important; }
+
+        /* 업로드 섹션 */
+        div[data-testid="stHorizontalBlock"] { align-items: flex-start !important; margin-top: 15px !important; margin-bottom: 5px !important; }
+        .camera-bg { width: 72px !important; height: 72px !important; background-color: #FAFBFC; border: 1px solid #EAEBEE; border-radius: 4px; display: flex; align-items: center; justify-content: center; color: #adb5bd; font-size: 14px; font-weight: bold; line-height: 1.2; text-align: center; }
         
-        /* 카메라 박스 영역 레이아웃 강제 고정 */
-        .upload-section { display: flex; flex-direction: row; align-items: center; gap: 12px; margin-bottom: 25px; width: 100%;}
-        .daangn-uploader-wrapper { position: relative; width: 80px; height: 80px; flex-shrink: 0; }
-        .daangn-camera-visual {
-            width: 80px; height: 80px; border: 1.5px solid #e9ecef; border-radius: 10px;
-            display: flex; flex-direction: column; justify-content: center; align-items: center;
-            position: absolute; top: 0; left: 0; z-index: 1; background: white;
-        }
+        /* 겉박스는 투명하게, 클릭은 가능하게 덮어씌움 */
+        [data-testid="stFileUploader"] { margin-top: -72px !important; width: 72px !important; height: 72px !important; opacity: 0 !important; cursor: pointer !important; z-index: 10 !important; }
+        [data-testid="stFileUploaderDropzone"] { height: 72px !important; min-height: 72px !important; padding: 0 !important; }
         
-        /* 진짜 업로더를 80px 안에 가두고 투명하게 */
-        .daangn-uploader-wrapper [data-testid="stFileUploader"] {
-            position: absolute; top: 0; left: 0; z-index: 2; opacity: 0 !important; width: 80px !important;
-        }
-        .daangn-uploader-wrapper [data-testid="stFileUploadDropzone"] {
-            width: 80px !important; height: 80px !important; padding: 0 !important; border: none !important;
-        }
+        /* 🚨 핵심 수정: section 태그 숨김 해제! ul(파일목록)과 에러메시지만 숨깁니다. */
+        [data-testid="stUploadedFile"], div[data-testid="stFileUploader"] > div:nth-child(2), div[data-testid="stFileUploader"] ul { display: none !important; }
         
-        .thumb-img { width: 80px; height: 80px; border-radius: 10px; object-fit: cover; border: 1px solid #f1f3f5; }
-        .error-hint { color: #ff5252; font-size: 13px; font-weight: bold; margin-bottom: 10px; }
+        .thumb-img { width: 72px !important; height: 72px !important; border-radius: 4px; object-fit: cover; border: 1px solid #EAEBEE; display: block; }
+        div[data-testid="column"]:nth-of-type(2) { margin-left: -10px !important; }
+
+        .thumb-img { width: 72px !important; height: 72px !important; border-radius: 4px; object-fit: cover; border: 1px solid #EAEBEE; display: block; }
+        div[data-testid="column"]:nth-of-type(2) { margin-left: -10px !important; }
+
+        /* 라벨 폰트 */
+        .stTextInput label p, .stTextArea label p, .stNumberInput label p { font-size: 15px !important; font-weight: 600 !important; color: #212529 !important; margin-bottom: 5px !important; }
+
+        /* 알약 버튼 */
+        div[role="radiogroup"] { display: flex; flex-direction: row; gap: 6px; margin: 10px 0 5px 0; }
+        div[role="radiogroup"] label { background-color: #F2F3F6 !important; border: 1px solid #F2F3F6 !important; border-radius: 16px !important; padding: 5px 12px !important; cursor: pointer; margin: 0 !important; display: flex !important; align-items: center !important; justify-content: center !important; }
+        div[role="radiogroup"] label:has(input:checked) { background-color: #212529 !important; border-color: #212529 !important; }
+        div[role="radiogroup"] label > div { margin: 0 !important; padding: 0 !important; }
+        div[role="radiogroup"] label p { color: #4D5159 !important; font-size: 13px !important; font-weight: bold !important; margin: 0 !important; text-align: center !important; }
+        div[role="radiogroup"] label:has(input:checked) p { color: #FFFFFF !important; }
+        div[role="radiogroup"] label > div:first-child { display: none !important; }
+
+        /* 입력창 디자인 */
+        div[data-testid="stCheckbox"] { margin-top: -10px; margin-bottom: 15px; }
+        div[data-testid="stCheckbox"] label p { font-size: 14px !important; color: #4D5159 !important; font-weight: 500 !important; }
+        div[data-baseweb="input"] > div, div[data-baseweb="textarea"] > div { background-color: transparent !important; border: none !important; border-bottom: 1px solid #EAEBEE !important; border-radius: 0 !important; box-shadow: none !important; }
+        div[data-baseweb="input"] > div:focus-within, div[data-baseweb="textarea"] > div:focus-within { border-bottom: 1px solid #212529 !important; }
+        input[type="text"], input[type="number"], textarea { font-size: 17px !important; padding: 15px 4px !important; color: #212529 !important; }
+        input::placeholder, textarea::placeholder { color: #ADB5BD !important; }
+        [data-testid="stNumberInputStepUp"], [data-testid="stNumberInputStepDown"] { display: none !important; }
+        
+        [data-testid="stButton"] button[kind="primary"] { background-color: #FF7E36 !important; color: #FFFFFF !important; border: none !important; border-radius: 6px !important; font-size: 16px !important; font-weight: bold !important; padding: 12px 0 !important; width: 100% !important; }
+        [data-testid="stButton"] button[kind="primary"]:hover { background-color: #E66A2B !important; }
         </style>
-    """,
+        """,
         unsafe_allow_html=True,
     )
 
-    # 🌟 2. 상단 헤더
+    # 🌟 2. 상단 헤더 & 네이티브 버튼
     st.markdown(
         """
         <div class="seller-header">
-            <div style="font-size:24px; cursor:pointer;" onclick="window.location.reload();">✕</div>
+            <div style="width:24px; height:24px;"></div>
             <span style="font-size:17px; font-weight:bold;">내 물건 팔기</span>
-            <span style="font-size:15px; color:#adb5bd;">임시저장</span>
+            <div style="width:55px;"></div>
         </div>
-    """,
+        """,
         unsafe_allow_html=True,
     )
+    # type을 완벽히 분리하여 꼬임 방지
+    st.button('✕', type='secondary', on_click=go_to_buyer)
+    st.button('임시저장', type='tertiary', on_click=save_draft)
 
-    # 🌟 3. 업로드 섹션 (가로 정렬)
-    st.markdown('<div class="upload-section">', unsafe_allow_html=True)
-    col_up, col_thumb = st.columns([1, 4])
+    # 🌟 3. 업로드 섹션
+    st.markdown('<div style="margin-top: 15px;"></div>', unsafe_allow_html=True)
+    col1, col2, col3 = st.columns([2, 2, 6])
 
-    with col_up:
-        st.markdown('<div class="daangn-uploader-wrapper">', unsafe_allow_html=True)
-        st.markdown(
-            '<div class="daangn-camera-visual"><span style="font-size:24px;">📷</span><span style="font-size:12px; color:#adb5bd;">0/10</span></div>',
-            unsafe_allow_html=True,
-        )
+    with col1:
+        st.markdown('<div class="camera-bg">📷<br>0/10</div>', unsafe_allow_html=True)
         img_file = st.file_uploader(
             ' ',
             type=['png', 'jpg', 'jpeg', 'webp'],
             label_visibility='collapsed',
             key='sell_img',
         )
-        st.markdown('</div>', unsafe_allow_html=True)
 
-    with col_thumb:
+    with col2:
         if img_file:
             b64 = base64.b64encode(img_file.getvalue()).decode()
             st.markdown(
-                f'<img src="data:image/jpeg;base64,{b64}" class="thumb-img">',
+                f'<div class="my-thumb-box"><img src="data:image/jpeg;base64,{b64}" class="thumb-img"></div>',
                 unsafe_allow_html=True,
             )
-    st.markdown('</div>', unsafe_allow_html=True)
 
-    # 🌟 4. 입력 폼 (실시간 AI 인식 정보 공간 추가)
-    st.write('')
-
-    # 🚨 [UI 마법 1] 나중에 AI 분석 결과가 들어갈 '빈 공간'을 제목 위에 미리 만들어 둡니다.
+    # 🌟 4. 입력 폼 (메모리 로딩 & 나눔하기 로직 적용)
     title_header = st.empty()
-    title_header.markdown(
-        "<span style='font-size:15px; font-weight:bold; color:#212529;'>제목</span>",
-        unsafe_allow_html=True,
-    )
 
-    # label_visibility='collapsed'를 써서 기본 제목 라벨을 숨기고 위에서 만든 공간을 활용합니다.
+    # 콜백용 key 할당 및 draft 로드
     title = st.text_input(
-        '제목', placeholder='제목을 입력해주세요.', label_visibility='collapsed'
+        '제목',
+        value=st.session_state.get('draft_title', ''),
+        placeholder='제목을 입력해주세요.',
+        key='title_input',
     )
-
     content = st.text_area(
-        '**자세한 설명**', height=150, placeholder='게시글 내용을 작성해 주세요.'
+        '자세한 설명',
+        value=st.session_state.get('draft_content', ''),
+        height=200,
+        placeholder='게시글 내용을 작성해주세요...',
+        key='content_input',
     )
-    price = st.number_input(
-        '**가격**', min_value=0, step=1000, placeholder='₩ 가격을 입력해주세요.'
+    sell_type = st.radio(
+        ' ', ['판매하기', '나눔하기'], horizontal=True, label_visibility='collapsed'
     )
 
-    # 🌟 5. 실시간 확률 예측 로직 (버튼 제거, 자동 실행)
+    # 나눔하기 판단
+    is_sharing = sell_type == '나눔하기'
+
+    price = st.number_input(
+        '**가격**',
+        min_value=0,
+        step=1000,
+        value=st.session_state.get('draft_price', None),
+        placeholder='₩ 가격을 입력해주세요.',
+        disabled=is_sharing,
+        key='price_input',
+    )
+    final_price = 0 if is_sharing else (price if price is not None else 0)
+
+    offer_check = st.checkbox('가격 제안 받기')
+
+    import ast
+
+    current_brand = 'unknown'
+    current_label = 'other'
+
+    # 사진, 제목, 설명 중 하나라도 입력되었다면 즉시 분류 시작!
+    if img_file or title.strip() or content.strip():
+        raw_b, raw_l = get_brand_and_label(siglip_predictor, img_file, title, content)
+        current_brand = raw_b
+
+        # 라벨 텍스트 파싱
+        if isinstance(raw_l, dict):
+            current_label = raw_l.get('final_label', 'other')
+        elif isinstance(raw_l, str) and '{' in raw_l:
+            try:
+                current_label = ast.literal_eval(raw_l).get('final_label', 'other')
+            except:
+                current_label = 'other'
+        else:
+            current_label = str(raw_l)
+
+        # 인식된 결과가 하나라도 의미 있는 값이면 배지를 즉시 띄움
+        if current_brand != 'unknown' or current_label != 'other':
+            title_header.markdown(
+                f"<div style='margin-bottom: 5px;'><span style='color:#EF7326; font-size:13px; font-weight:bold; background-color:#fff0e6; padding:4px 10px; border-radius:12px;'>✨ AI 인식: {current_brand} / {current_label}</span></div>",
+                unsafe_allow_html=True,
+            )
+
+    # 🌟 5. 실시간 확률 예측 로직 (스마트 안내)
     st.write('')
     st.markdown('#### ⚡ AI 실시간 판매 확률')
 
-    # 세 가지 필수 조건이 모두 채워지는 순간, 버튼 없이 곧바로 분석 시작!
-    if title and content and price > 0:
+    missing_fields = []
+    if not img_file:
+        missing_fields.append('사진')
+    if not title.strip():
+        missing_fields.append('제목')
+    if not content.strip():
+        missing_fields.append('자세한 설명')
+
+    # 나눔하기 상태라면 가격(0원) 검증을 통과시킴
+    if not is_sharing and final_price <= 0:
+        missing_fields.append('가격')
+
+    if len(missing_fields) == 0:
         with st.spinner('AI가 매물의 매력도를 실시간으로 분석하고 있어요...'):
             try:
                 user_region = st.session_state.get('current_user_region', '석촌동')
                 if user_region == '전체 동네':
                     user_region = '석촌동'
 
-                # 모델 예측 함수 호출
-                p, b, l = predict_sell_probability(
-                    sell_model,
-                    siglip_predictor,
-                    img_file,
-                    title,
-                    content,
-                    price,
-                    region_name=user_region,
+                # 🚨 [수정] 무거운 직접 계산 대신 FastAPI 서버로 요청(POST)을 보냅니다!
+                import requests
+
+                # 1. 보낼 데이터 포장
+                api_data = {
+                    'title': title,
+                    'content': content,
+                    'price': final_price,
+                    'region_name': user_region,
+                    'seller_temp': 36.5,
+                }
+
+                # 2. 보낼 이미지 포장
+                api_files = {}
+                if img_file:
+                    api_files['image'] = (
+                        img_file.name,
+                        img_file.getvalue(),
+                        img_file.type,
+                    )
+
+                # 3. FastAPI 서버(백엔드) 호출
+                response = requests.post(
+                    'http://127.0.0.1:8000/predict/sell', data=api_data, files=api_files
                 )
 
-                # 🚨 [UI 마법 2] 계산이 끝나면 아까 비워둔 제목 윗공간에 AI 정보를 세련되게 채워 넣습니다!
-                title_header.markdown(
-                    f"<span style='font-size:15px; font-weight:bold; color:#212529;'>제목</span> <span style='color:#EF7326; font-size:13px; font-weight:bold; margin-left:8px; background-color:#fff0e6; padding:2px 8px; border-radius:10px;'>✨ AI 인식: {b} / {l}</span>",
-                    unsafe_allow_html=True,
+                # 4. 결과 받아오기
+                if response.status_code == 200:
+                    result = response.json()
+                    if result['status'] == 'success':
+                        p = result['probability']
+                    else:
+                        st.error(f'API 예측 에러: {result["message"]}')
+                        p = 0.0
+                else:
+                    st.error(
+                        'API 서버와 통신할 수 없습니다. 백엔드 서버가 켜져 있는지 확인하세요.'
+                    )
+                    p = 0.0  # 🚨 [수정] 무거운 직접 계산 대신 FastAPI 서버로 요청(POST)을 보냅니다!
+                import requests
+
+                # 1. 보낼 데이터 포장
+                api_data = {
+                    'title': title,
+                    'content': content,
+                    'price': final_price,
+                    'region_name': user_region,
+                    'seller_temp': 36.5,
+                    'is_submit': 'false',
+                }
+
+                # 2. 보낼 이미지 포장
+                api_files = {}
+                if img_file:
+                    api_files['image'] = (
+                        img_file.name,
+                        img_file.getvalue(),
+                        img_file.type,
+                    )
+
+                # 3. FastAPI 서버(백엔드) 호출
+                response = requests.post(
+                    'http://127.0.0.1:8000/predict/sell', data=api_data, files=api_files
                 )
 
-                # 확률 게이지 바
+                # 4. 결과 받아오기
+                if response.status_code == 200:
+                    result = response.json()
+                    if result['status'] == 'success':
+                        p = result['probability']
+                    else:
+                        st.error(f'API 예측 에러: {result["message"]}')
+                        p = 0.0
+                else:
+                    st.error(
+                        'API 서버와 통신할 수 없습니다. 백엔드 서버가 켜져 있는지 확인하세요.'
+                    )
+                    p = 0.0
+
+                # 🚨 나눔하기면 99.9% 1초컷!
+                # (하드코딩 삭제) 모델이 0원(나눔) 기준으로 계산한 p값을 그대로 사용합니다.
                 st.progress(int(p) if p <= 100 else 100)
 
                 # 확률 구간별 피드백 메시지
-                if p >= 75:
+                if is_sharing:
+                    st.success(
+                        f'🎁 예상 나눔 완료 확률: **{p}%** (무료 나눔도 사진과 설명에 따라 성공 확률이 달라집니다!)'
+                    )
+                elif p >= 75:
                     st.success(
                         f'🔥 예상 판매 확률: **{p}%** (올리자마자 불티나게 팔릴 확률이 높아요!)'
                     )
-                elif p >= 40:
+                elif p >= 50:
                     st.info(
                         f'👍 예상 판매 확률: **{p}%** (가격과 조건이 꽤 괜찮습니다.)'
                     )
@@ -638,14 +891,56 @@ elif st.session_state.page == 'seller':
             except Exception as e:
                 st.error(f'예측 실패: {e}')
     else:
-        # 입력값이 부족할 때 보여주는 안내 문구
+        missing_str = ', '.join(missing_fields)
         st.info(
-            '💡 사진, 제목, 설명, 가격을 모두 입력하면 AI가 확률을 실시간으로 알려줍니다.'
+            f'💡 **{missing_str}** 항목을 더 입력해 주시면 AI가 판매 확률을 분석해 드립니다.'
         )
 
     # 🌟 6. 작성 완료 버튼
     st.write('')
-    if st.button(
-        '작성 완료', type='primary', use_container_width=True, on_click=go_to_buyer
-    ):
-        st.balloons()
+    if st.button('작성 완료', type='primary', use_container_width=True):
+        if len(missing_fields) > 0:
+            st.error(
+                '필수 항목(사진, 제목, 내용, 가격)을 모두 입력해야 등록할 수 있습니다.'
+            )
+        else:
+            with st.spinner('데이터를 서버에 안전하게 저장 중입니다...'):
+                try:
+                    import requests
+
+                    user_region = st.session_state.get('current_user_region', '석촌동')
+                    if user_region == '전체 동네':
+                        user_region = '석촌동'
+
+                    # 🚨 [핵심] 여기서 'is_submit': 'true'로 쏴서 저장을 지시합니다!
+                    api_data = {
+                        'title': title,
+                        'content': content,
+                        'price': final_price,
+                        'region_name': user_region,
+                        'seller_temp': 36.5,
+                        'is_submit': 'true',
+                    }
+                    api_files = {}
+                    if img_file:
+                        api_files['image'] = (
+                            img_file.name,
+                            img_file.getvalue(),
+                            img_file.type,
+                        )
+
+                    response = requests.post(
+                        'http://127.0.0.1:8000/predict/sell',
+                        data=api_data,
+                        files=api_files,
+                    )
+
+                    if response.status_code == 200:
+                        st.balloons()  # 발표용 시각 효과 🎉
+                        st.success('성공적으로 등록되고 데이터가 저장되었습니다!')
+                        clear_draft_and_submit()
+                        st.rerun()
+                    else:
+                        st.error('서버에 저장하지 못했습니다.')
+                except Exception as e:
+                    st.error(f'서버 통신 에러: {e}')
