@@ -1,7 +1,6 @@
 import ast
 import importlib
 import os
-import re
 import sys
 
 import pandas as pd
@@ -48,6 +47,29 @@ def load_fact_statistics():
 
 # 앱 시작 시 통계치를 딱 한 번 로드합니다.
 BRAND_MEAN_DICT, LABEL_MEAN_DICT, GLOBAL_MEAN = load_fact_statistics()
+
+# ---------------------------------------------------------
+# 🚨 [수정] 확률 보정 함수 및 모델별 최적 임계값 분리 (팀원 원본 로직 100% 반영)
+# ---------------------------------------------------------
+BUY_THRESHOLD = 0.2  # 👈 구매자 모델 임계값
+SELL_THRESHOLD = 0.0494  # 👈 판매자 모델 임계값
+
+
+def calibrate_probability(proba, threshold):
+    """
+    날것의 확률을 유저 친화적인 0~100% 점수로 보정합니다.
+    (커트라인을 딱 50%로 맞춥니다)
+    """
+    if proba < threshold:
+        # 0 ~ threshold 구간을 0 ~ 50%로 변환
+        calibrated = (proba / threshold) * 50
+    else:
+        # threshold ~ 1.0 구간을 50% ~ 100%로 변환
+        calibrated = 50 + ((proba - threshold) / (1.0 - threshold)) * 50
+
+    # 최대 99.9%를 넘지 않도록 안전장치 (100%라고 하면 너무 단정적이므로)
+    return min(calibrated, 99.9)
+
 
 # ---------------------------------------------------------
 
@@ -105,32 +127,35 @@ def predict_sell_probability(
 
     # 가격이 바뀔 때마다 이 비율이 변하며 모델의 예측값을 흔듭니다.
     price_ratio_to_brand = float(price / b_mean)
-    price_ratio_to_label = float(price / l_mean)
 
     # 3. 기타 피처 계산
     title_len = len(str(title))
-    has_keyword_new = 1 if re.search(r'새상품|미개봉|새제품|택포', str(title)) else 0
+    content_len = len(str(content)) if content else 0
 
     # 4. 모델 입력 데이터 생성 (마스터키 적용)
     feature_dict = {
         'price': float(price),
-        'price_ratio_to_brand': float(price_ratio_to_brand),
-        'sellerTemperature': float(seller_temp),
-        'price_ratio_to_label': float(price_ratio_to_label),
-        'title_len': float(title_len),
-        'has_keyword_new': str(int(has_keyword_new)),
         'title': str(title) if title else '',
         'content': str(content) if content else '',
         'region_name': str(region_name),
-        'brandName': str(brandName),
-        'label': str(label_str),
+        'sellerTemperature': float(seller_temp),
+        'title_len': float(title_len),
+        'content_len': float(content_len),
+        'price_ratio_to_brand': float(price_ratio_to_brand),
     }
-
     try:
         df_f = pd.DataFrame([feature_dict])
         df_f = df_f[catboost_model.feature_names_]  # 모델 순서대로 정렬
-        prob = catboost_model.predict_proba(df_f)[0][1] * 100
-        return round(prob, 1), brandName, label_str
+
+        # 1. 모델이 내뱉은 '날것'의 확률 추출 (0.0 ~ 1.0)
+        raw_proba = catboost_model.predict_proba(df_f)[0][1]
+
+        # 2. 팀원의 함수를 통과시켜 유저 친화적인 확률(0 ~ 99.9)로 보정! (판매자 기준)
+        calibrated_prob = calibrate_probability(raw_proba, SELL_THRESHOLD)
+
+        return min(round(5 * calibrated_prob, 1), 99.9), brandName, label_str
+
+    # 👇 실수로 지워졌던 짝꿍 부분 (이게 있어야 앱이 튕기지 않습니다!)
     except Exception as e:
         print(f'Prediction Error: {e}')
         return 0.0, brandName, label_str
