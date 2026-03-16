@@ -28,7 +28,6 @@
    ```bash
    uvicorn api:app --reload --port 8000
    uv run streamlit run app.py
-
 ### 📌 참고사항
 * 생성되었던 다수의 백업 복사본 파일(app copy_...py 등)은 히스토리를 깔끔하게 유지하기 위해 커밋에서 제외했습니다.
 
