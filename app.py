@@ -331,6 +331,10 @@ def load_real_feed_data():
         # 👇 추가: 가격이 비어있으면(NaN) 0원으로 처리해서 에러 방지
         feed_df['price'] = feed_df.get('price', 0).fillna(0).astype(int)
 
+        # 🚨 [추가된 코드] CSV에 동네 이름이 없으면 '석촌동'으로 강제 주입!
+        if 'region_name' not in feed_df.columns:
+            feed_df['region_name'] = feed_df.get('region', '석촌동')
+
         # 목록을 한번 더 섞어서 반환
         return feed_df.sample(frac=1).reset_index(drop=True)
 
@@ -416,7 +420,12 @@ if st.session_state.page == 'buyer':
     current_time = datetime.now().strftime('%H:%M')
 
     # 2. 동네 목록 가나다순 정렬 및 '전체 동네' 맨 위 고정
-    unique_regions = feed_data['region_name'].dropna().unique().tolist()
+    # 🚨 [최종 방어막] 스트림릿 캐시가 꼬여서 열이 통째로 날아갔을 경우를 대비합니다.
+    if 'region_name' in feed_data.columns:
+        unique_regions = feed_data['region_name'].dropna().unique().tolist()
+    else:
+        unique_regions = ['석촌동']  # 에러가 날 경우 임시 동네를 강제로 넣습니다.
+
     unique_regions.sort()
     region_options = ['전체 동네'] + unique_regions
 
@@ -787,45 +796,6 @@ elif st.session_state.page == 'seller':
                 if user_region == '전체 동네':
                     user_region = '석촌동'
 
-                # 🚨 [수정] 무거운 직접 계산 대신 FastAPI 서버로 요청(POST)을 보냅니다!
-                import requests
-
-                # 1. 보낼 데이터 포장
-                api_data = {
-                    'title': title,
-                    'content': content,
-                    'price': final_price,
-                    'region_name': user_region,
-                    'seller_temp': 36.5,
-                }
-
-                # 2. 보낼 이미지 포장
-                api_files = {}
-                if img_file:
-                    api_files['image'] = (
-                        img_file.name,
-                        img_file.getvalue(),
-                        img_file.type,
-                    )
-
-                # 3. FastAPI 서버(백엔드) 호출
-                response = requests.post(
-                    'http://127.0.0.1:8000/predict/sell', data=api_data, files=api_files
-                )
-
-                # 4. 결과 받아오기
-                if response.status_code == 200:
-                    result = response.json()
-                    if result['status'] == 'success':
-                        p = result['probability']
-                    else:
-                        st.error(f'API 예측 에러: {result["message"]}')
-                        p = 0.0
-                else:
-                    st.error(
-                        'API 서버와 통신할 수 없습니다. 백엔드 서버가 켜져 있는지 확인하세요.'
-                    )
-                    p = 0.0  # 🚨 [수정] 무거운 직접 계산 대신 FastAPI 서버로 요청(POST)을 보냅니다!
                 import requests
 
                 # 1. 보낼 데이터 포장
@@ -867,7 +837,6 @@ elif st.session_state.page == 'seller':
                     p = 0.0
 
                 # 🚨 나눔하기면 99.9% 1초컷!
-                # (하드코딩 삭제) 모델이 0원(나눔) 기준으로 계산한 p값을 그대로 사용합니다.
                 st.progress(int(p) if p <= 100 else 100)
 
                 # 확률 구간별 피드백 메시지
